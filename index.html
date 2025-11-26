@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Склад товаров — Финальная</title>
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#3b82f6"/>
+    <link rel="icon" href="icons/icon-192.png">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        :root {
+            --background-start-rgb: 240, 242, 245;
+            --background-end-rgb: 229, 231, 235;
+            --foreground-rgb: 17, 24, 39;
+            --primary-rgb: 59, 130, 246;
+            --secondary-rgb: 249, 250, 251;
+            --border-rgb: 209, 213, 219;
+            --input-bg-rgb: 255, 255, 255;
+            --input-text-rgb: 17, 24, 39;
+        }
+        [data-theme="dark"] {
+            --background-start-rgb: 31, 41, 55;
+            --background-end-rgb: 17, 24, 39;
+            --foreground-rgb: 229, 231, 235;
+            --primary-rgb: 96, 165, 250;
+            --secondary-rgb: 55, 65, 81;
+            --border-rgb: 75, 85, 99;
+            --input-bg-rgb: 55, 65, 81;
+            --input-text-rgb: 243, 244, 246;
+        }
+        body {
+            background: linear-gradient(to bottom, rgb(var(--background-start-rgb)), rgb(var(--background-end-rgb)));
+            color: rgb(var(--foreground-rgb));
+            min-height: 100vh;
+        }
+        .sidebar { background-color: rgb(var(--secondary-rgb)); border-right: 1px solid rgb(var(--border-rgb)); }
+        .card { background-color: rgb(var(--secondary-rgb)); border: 1px solid rgb(var(--border-rgb)); }
+        .form-input, .form-select { background-color: rgb(var(--input-bg-rgb)); color: rgb(var(--input-text-rgb)); border: 1px solid rgb(var(--border-rgb)); padding: 0.5rem; border-radius: 0.5rem; }
+        .btn-primary { background-color: rgb(var(--primary-rgb)); color: white; padding: 0.5rem 1rem; border-radius: 0.5rem; }
+        .btn-secondary { background-color: transparent; border: 1px solid rgb(var(--border-rgb)); padding: 0.5rem 1rem; border-radius: 0.5rem; }
+        .modal-backdrop { background-color: rgba(0,0,0,0.5); }
+    </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useMemo } = React;
+
+/* Icons */
+const PlusIcon = () => <svg className="h-4 w-4 mr-1" viewBox="0 0 20 20" fill="currentColor"><path d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" /></svg>;
+const PencilIcon = () => <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path d="M17.414 2.586a2 2 0 00-2.828 0L7 10.172V13h2.828l7.586-7.586a2 2 0 000-2.828z" /></svg>;
+const TrashIcon = () => <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm4 0a1 1 0 012 0v6a1 1 0 11-2 0V8z" clipRule="evenodd" /></svg>;
+
+/* Local storage hook */
+const useLocalStorage = (key, initial) => {
+  const [state, setState] = useState(() => {
+    try { const r = localStorage.getItem(key); return r ? JSON.parse(r) : initial; } catch { return initial; }
+  });
+  useEffect(()=>{ try{ localStorage.setItem(key, JSON.stringify(state)); } catch{} }, [key, state]);
+  return [state, setState];
+};
+
+/* Smart filter across fields: name, category, status, condition */
+function smartFilter(items, query, extraFields=[]){
+    if (!query) return items;
+    const q = query.trim().toLowerCase();
+    if (!q) return items;
+    return items.filter(item => {
+        if (!item) return false;
+        const fields = ['name','category','status','condition','type','itemName'].concat(extraFields);
+        for (const f of fields){
+            if (item[f] && String(item[f]).toLowerCase().includes(q)) return true;
+        }
+        // also support splitting query into tokens: all tokens must match somewhere
+        const tokens = q.split(/\s+/).filter(Boolean);
+        if (tokens.length > 1) {
+            return tokens.every(tok => {
+                return fields.some(f => item[f] && String(item[f]).toLowerCase().includes(tok));
+            });
+        }
+        return false;
+    });
+}
+
+/* Default data */
+const DEFAULT_DATA = {
+    goods: [{ id: 'G001', name: 'Материнская плата A520', category: 'Комплектующие', quantity: 50, price: 5000, status: 'Исправный' }, { id: 'G002', name: 'Процессор Ryzen 5 3600', category: 'Комплектующие', quantity: 30, price: 12000, status: 'Исправный' }, { id: 'G003', name: 'Насос водяной', category: 'Насосы', quantity: 15, price: 3000, status: 'Исправный' }],
+    tools: [{ id: 'T001', name: 'Паяльная станция', category: 'Оборудование', quantity: 5, condition: 'Новый', status: 'Исправный' }],
+    suppliers: [{ id: 'S001', name: 'ООО "Комплект"' }, { id: 'S002', name: 'ИП "Техно"' }],
+    employees: [{ id: 'E001', name: 'Иванов Иван' }, { id: 'E002', name: 'Петров Петр' }],
+    categories: [{ id: 'C001', name: 'Комплектующие' }, { id: 'C002', name: 'Оборудование' }, { id: 'C003', name: 'Расходники' }, { id: 'C004', name: 'Насосы'}],
+    receipts: [], issues: [], assemblies: [], returns: [], machines: [], repairs: []
+};
+
+/* App */
+function App(){
+    const [page, setPage] = useState('dashboard');
+    const [theme, setTheme] = useLocalStorage('theme','light');
+    useEffect(()=>document.documentElement.setAttribute('data-theme', theme), [theme]);
+
+    const [goods, setGoods] = useLocalStorage('goods', DEFAULT_DATA.goods);
+    const [tools, setTools] = useLocalStorage('tools', DEFAULT_DATA.tools);
+    const [suppliers, setSuppliers] = useLocalStorage('suppliers', DEFAULT_DATA.suppliers);
+    const [employees, setEmployees] = useLocalStorage('employees', DEFAULT_DATA.employees);
+    const [categories, setCategories] = useLocalStorage('categories', DEFAULT_DATA.categories);
+    const [receipts, setReceipts] = useLocalStorage('receipts', DEFAULT_DATA.receipts);
+    const [issues, setIssues] = useLocalStorage('issues', DEFAULT_DATA.issues);
+    const [assemblies, setAssemblies] = useLocalStorage('assemblies', DEFAULT_DATA.assemblies);
+    const [returnsLog, setReturnsLog] = useLocalStorage('returns', DEFAULT_DATA.returns);
+    const [machines, setMachines] = useLocalStorage('machines', DEFAULT_DATA.machines);
+    const [repairs, setRepairs] = useLocalStorage('repairs', DEFAULT_DATA.repairs);
+
+    const allItems = useMemo(()=> [...goods.map(g=>({...g, type:'good'})), ...tools.map(t=>({...t, type:'tool'}))], [goods, tools]);
+
+    const handleExport = () => {
+        const wb = XLSX.utils.book_new();
+        const sheets = { goods, tools, suppliers, employees, categories, receipts, issues, assemblies, returns: returnsLog, machines, repairs };
+        for (const [name, data] of Object.entries(sheets)){
+            const copy = JSON.parse(JSON.stringify(data));
+            if (name === 'assemblies' || name === 'machines') {
+                copy.forEach(r => { if (r.components) r.components = JSON.stringify(r.components); });
+            }
+            const ws = XLSX.utils.json_to_sheet(copy);
+            XLSX.utils.book_append_sheet(wb, ws, name);
+        }
+        XLSX.writeFile(wb, 'warehouse_data_full.xlsx');
+    };
+
+    const handleImport = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+            try{
+                const data = new Uint8Array(ev.target.result);
+                const wb = XLSX.read(data, {type:'array'});
+                const read = (name, setter, def) => {
+                    const s = wb.Sheets[name];
+                    if (s){
+                        let j = XLSX.utils.sheet_to_json(s);
+                        if (name==='assemblies' || name==='machines') {
+                            j = j.map(r => { if (r.components && typeof r.components === 'string') { try { r.components = JSON.parse(r.components); } catch { r.components = []; } } return r; });
+                        }
+                        setter(j);
+                    } else setter(def);
+                };
+                read('goods', setGoods, DEFAULT_DATA.goods);
+                read('tools', setTools, DEFAULT_DATA.tools);
+                read('suppliers', setSuppliers, DEFAULT_DATA.suppliers);
+                read('employees', setEmployees, DEFAULT_DATA.employees);
+                read('categories', setCategories, DEFAULT_DATA.categories);
+                read('receipts', setReceipts, DEFAULT_DATA.receipts);
+                read('issues', setIssues, DEFAULT_DATA.issues);
+                read('assemblies', setAssemblies, DEFAULT_DATA.assemblies);
+                read('returns', setReturnsLog, DEFAULT_DATA.returns);
+                read('machines', setMachines, DEFAULT_DATA.machines);
+                read('repairs', setRepairs, DEFAULT_DATA.repairs);
+                alert('Импорт завершён');
+            } catch(err){ console.error(err); alert('Ошибка импорта'); }
+        };
+        reader.readAsArrayBuffer(file);
+        e.target.value = '';
+    };
+
+    const nav = ['dashboard','goods','tools','receipts','issues','employee_inventory','assembly','machines','repairs','movements','analytics','settings'];
+
+    return (
+        <div className="flex h-screen">
+            <aside className="sidebar w-64 p-4 flex flex-col">
+                <div className="text-2xl font-bold mb-4">Склад</div>
+                <nav className="flex-1 space-y-2">
+                    {nav.map(n => <button key={n} onClick={()=>setPage(n)} className={`w-full text-left p-2 rounded ${page===n? 'bg-blue-500 text-white':''}`}>{n === 'dashboard' ? 'Панель управления' : n==='goods' ? 'Склад товаров' : n==='tools' ? 'Склад инструментов' : n==='receipts' ? 'Приход' : n==='issues' ? 'Расход' : n==='employee_inventory' ? 'Учет у сотрудников' : n==='assembly' ? 'Сборка / Реновация' : n==='machines' ? 'Аппараты' : n==='repairs' ? 'Ремонты / Работы' : n==='movements' ? 'Перемещения' : n==='analytics' ? 'Аналитика' : 'Настройки'}</button>)}
+                </nav>
+                <div className="space-y-2 mt-4">
+                    <input type="file" id="import-file" className="hidden" accept=".xlsx" onChange={handleImport} />
+                    <button className="btn-secondary w-full" onClick={()=>document.getElementById('import-file').click()}>Импорт</button>
+                    <button className="btn-secondary w-full" onClick={handleExport}>Экспорт</button>
+                    <button className="btn-secondary w-full" onClick={()=>setTheme(theme==='light'?'dark':'light')}>Тема: {theme}</button>
+                </div>
+            </aside>
+            <main className="flex-1 p-6 overflow-auto">
+                {page === 'dashboard' && <Dashboard goods={goods} tools={tools} />}
+                {page === 'goods' && <InventoryPage title="Склад товаров" items={goods} setItems={setGoods} categories={categories} itemType="good" />}
+                {page === 'tools' && <InventoryPage title="Склад инструментов" items={tools} setItems={setTools} categories={categories} itemType="tool" />}
+                {page === 'receipts' && <ReceiptsPage allItems={allItems} goods={goods} setGoods={setGoods} tools={tools} setTools={setTools} suppliers={suppliers} employees={employees} receipts={receipts} setReceipts={setReceipts} />}
+                {page === 'issues' && <IssuesPage allItems={allItems} goods={goods} setGoods={setGoods} tools={tools} setTools={setTools} employees={employees} issues={issues} setIssues={setIssues} />}
+                {page === 'employee_inventory' && <EmployeeInventoryPage issues={issues} returnsLog={returnsLog} setReturnsLog={setReturnsLog} employees={employees} allItems={allItems} setGoods={setGoods} setTools={setTools} />}
+                {page === 'assembly' && <AssemblyPage goods={goods} setGoods={setGoods} employees={employees} assemblies={assemblies} setAssemblies={setAssemblies} />}
+                {page === 'machines' && <MachinesPage machines={machines} setMachines={setMachines} goods={goods} />}
+                {page === 'repairs' && <RepairsPage allItems={allItems} goods={goods} setGoods={setGoods} tools={tools} setTools={setTools} repairs={repairs} setRepairs={setRepairs} />}
+                {page === 'movements' && <MovementsPage allItems={allItems} receipts={receipts} issues={issues} returnsLog={returnsLog} assemblies={assemblies} repairs={repairs} />}
+                {page === 'analytics' && <AnalyticsPage goods={goods} receipts={receipts} issues={issues} assemblies={assemblies} />}
+                {page === 'settings' && <SettingsPage suppliers={suppliers} setSuppliers={setSuppliers} employees={employees} setEmployees={setEmployees} categories={categories} setCategories={setCategories} />}
+            </main>
+        </div>
+    );
+}
+
+/* Dashboard */
+function Dashboard({goods, tools}){
+    const totalGoods = goods.reduce((s,i)=>s+Number(i.quantity||0),0);
+    const totalTools = tools.reduce((s,i)=>s+Number(i.quantity||0),0);
+    const low = goods.filter(g=>Number(g.quantity)<10).length;
+    return (<div><h1 className="text-3xl font-bold mb-4">Панель управления</h1><div className="grid grid-cols-1 md:grid-cols-3 gap-4"><div className="card p-4 rounded"><h2 className="font-semibold">Всего товаров</h2><div className="text-3xl font-bold">{totalGoods}</div></div><div className="card p-4 rounded"><h2 className="font-semibold">Всего инструментов</h2><div className="text-3xl font-bold">{totalTools}</div></div><div className="card p-4 rounded"><h2 className="font-semibold">Низкий запас (&lt;10)</h2><div className="text-3xl font-bold text-red-500">{low}</div></div></div></div>);
+}
+
+/* InventoryPage */
+function InventoryPage({title, items, setItems, categories, itemType}){
+    const [open, setOpen] = useState(false);
+    const [editing, setEditing] = useState(null);
+    const [search, setSearch] = useState('');
+    const [selectedCategory, setSelectedCategory] = useState('');
+    const categoriesList = categories.map(c=>c.name);
+    const filtered = items.filter(it => {
+        const byCat = selectedCategory ? (it.category === selectedCategory) : true;
+        return byCat && smartFilter([it], search).length > 0;
+    });
+
+    const saveItem = (item) => {
+        if (item.id) setItems(prev => prev.map(p=> p.id===item.id ? item : p));
+        else { const id = `${itemType.charAt(0).toUpperCase()}${Date.now()}`; setItems(prev=> [...prev, {...item, id}]); }
+        setOpen(false); setEditing(null);
+    };
+    const del = (id) => { if (confirm('Удалить элемент?')) setItems(prev=> prev.filter(p=>p.id!==id)); };
+
+    return (
+        <div>
+            <div className="flex justify-between items-center mb-4">
+                <h1 className="text-2xl font-bold">{title}</h1>
+                <div>
+                    <button className="btn-primary" onClick={()=>{ setEditing(null); setOpen(true); }}><PlusIcon/> Добавить</button>
+                </div>
+            </div>
+            <div className="card p-4 mb-4 grid grid-cols-1 md:grid-cols-3 gap-2">
+                <input className="form-input" placeholder="Поиск (название, категория, статус)..." value={search} onChange={e=>setSearch(e.target.value)} />
+                <select className="form-select" value={selectedCategory} onChange={e=>setSelectedCategory(e.target.value)}>
+                    <option value="">Все категории</option>
+                    {categoriesList.map(c=> <option key={c} value={c}>{c}</option>)}
+                </select>
+            </div>
+            <div className="card overflow-auto">
+                <table className="w-full">
+                    <thead><tr className="text-left"><th className="p-3">ID</th><th className="p-3">Наименование</th><th className="p-3">Категория</th><th className="p-3">Кол-во</th>{itemType==='good'?<th className="p-3">Цена</th>:<th className="p-3">Состояние</th>}<th className="p-3">Статус</th><th className="p-3">Действия</th></tr></thead>
+                    <tbody>{filtered.map(it=>(<tr key={it.id} className="border-t hover:bg-gray-50"><td className="p-3">{it.id}</td><td className="p-3">{it.name}</td><td className="p-3">{it.category}</td><td className="p-3">{it.quantity}</td>{itemType==='good'?<td className="p-3">{it.price}</td>:<td className="p-3">{it.condition}</td>}<td className="p-3">{it.status||'Исправный'}</td><td className="p-3"><button className="mr-2" onClick={()=>{setEditing(it); setOpen(true);}}><PencilIcon/></button><button className="text-red-500" onClick={()=>del(it.id)}><TrashIcon/></button></td></tr>))}</tbody>
+                </table>
+            </div>
+            {open && <InventoryModal item={editing} onClose={()=>{setOpen(false); setEditing(null);}} onSave={saveItem} categories={categoriesList} itemType={itemType} />}
+        </div>
+    );
+}
+
+function InventoryModal({item, onClose, onSave, categories, itemType}){
+    const [form, setForm] = useState(item || (itemType==='good'?{name:'', category:'', quantity:0, price:0, status:'Исправный'}:{name:'', category:'', quantity:0, condition:'Новый', status:'Исправный'}));
+    const change = (k,v) => setForm(prev=>({...prev, [k]:v}));
+    const submit = (e) => { e.preventDefault(); onSave(form); };
+    return (
+        <div className="modal-backdrop fixed inset-0 flex items-center justify-center z-50">
+            <div className="card p-4 w-full max-w-2xl rounded">
+                <div className="flex justify-between"><h3 className="font-bold">{item? 'Редактировать' : 'Добавить'}</h3><button onClick={onClose}>✕</button></div>
+                <form onSubmit={submit} className="space-y-2 mt-2">
+                    <input className="form-input w-full" placeholder="Наименование" value={form.name} onChange={e=>change('name', e.target.value)} required />
+                    <input className="form-input w-full" placeholder="Категория" value={form.category} onChange={e=>change('category', e.target.value)} required />
+                    <input type="number" className="form-input w-full" placeholder="Количество" value={form.quantity} onChange={e=>change('quantity', Number(e.target.value))} min="0" required />
+                    {itemType==='good' ? <input type="number" className="form-input w-full" placeholder="Цена" value={form.price} onChange={e=>change('price', Number(e.target.value))} min="0" required /> : <select className="form-select w-full" value={form.condition} onChange={e=>change('condition', e.target.value)}><option>Новый</option><option>Б/У</option><option>В ремонте</option></select>}
+                    <select className="form-select w-full" value={form.status} onChange={e=>change('status', e.target.value)}><option>Исправный</option><option>Неисправен</option><option>Нуждается в проверке</option></select>
+                    <div className="flex justify-end space-x-2"><button type="button" className="btn-secondary" onClick={onClose}>Отмена</button><button type="submit" className="btn-primary">Сохранить</button></div>
+                </form>
+            </div>
+        </div>
+    );
+}
+
+/* ReceiptsPage */
+function ReceiptsPage({allItems, goods, setGoods, tools, setTools, suppliers, employees, receipts, setReceipts}){
+    const now = new Date().toISOString().slice(0,10);
+    const [form, setForm] = useState({itemId:'', quantity:1, supplierId:'', employeeId:'', date: now, condition:'Исправный'});
+    const [search, setSearch] = useState('');
+    const [categoryFilter, setCategoryFilter] = useState('');
+    const uniqueCats = useMemo(()=> [...new Set(allItems.map(i=>i.category).filter(Boolean))], [allItems]);
+    const filteredItems = allItems.filter(i=> (categoryFilter? i.category===categoryFilter: true)).filter(i=> smartFilter([i], search).length>0);
+    const add = (e)=>{
+        e.preventDefault();
+        const item = allItems.find(i=>i.id===form.itemId);
+        if (!item) { alert('Выберите товар'); return; }
+        const q = Number(form.quantity); if (isNaN(q)||q<=0){ alert('Кол-во>0'); return; }
+        const rec = { id:`R${Date.now()}`, ...form, quantity: q, itemName: item.name, supplierName: (suppliers.find(s=>s.id===form.supplierId)||{}).name || 'N/A', employeeName: (employees.find(e=>e.id===form.employeeId)||{}).name || 'N/A' };
+        setReceipts(prev=> [rec, ...prev]);
+        if (item.type === 'good') setGoods(prev => prev.map(g=> g.id===item.id ? {...g, quantity: Number(g.quantity)+q, status: form.condition==='Исправный' ? (g.status||'Исправный'): form.condition } : g));
+        else setTools(prev => prev.map(t=> t.id===item.id ? {...t, quantity: Number(t.quantity)+q, status: form.condition==='Исправный' ? (t.status||'Исправный'): form.condition } : t));
+        setForm({itemId:'', quantity:1, supplierId:'', employeeId:'', date: now, condition:'Исправный'});
+    };
+    return (
+        <div>
+            <h1 className="text-2xl font-bold mb-4">Приход товара</h1>
+            <div className="card p-4 mb-4">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                    <input className="form-input" placeholder="Поиск (название, категория, статус)..." value={search} onChange={e=>setSearch(e.target.value)} />
+                    <select className="form-select" value={categoryFilter} onChange={e=>setCategoryFilter(e.target.value)}><option value="">Все категории</option>{uniqueCats.map(c=> <option key={c} value={c}>{c}</option>)}</select>
+                    <div></div>
+                </div>
+                <form onSubmit={add} className="grid grid-cols-1 md:grid-cols-3 gap-2 mt-3">
+                    <select className="form-select md:col-span-2" value={form.itemId} onChange={e=>setForm(prev=>({...prev, itemId: e.target.value}))} required><option value="">Выберите товар/инструмент</option>{filteredItems.map(i=> <option key={i.id} value={i.id}>{i.name} (ост: {i.quantity})</option>)}</select>
+                    <input type="number" className="form-input" value={form.quantity} onChange={e=>setForm(prev=>({...prev, quantity: Number(e.target.value)}))} min="1" />
+                    <select className="form-select" value={form.supplierId} onChange={e=>setForm(prev=>({...prev, supplierId: e.target.value}))} required><option value="">Поставщик</option>{suppliers.map(s=> <option key={s.id} value={s.id}>{s.name}</option>)}</select>
+                    <select className="form-select" value={form.employeeId} onChange={e=>setForm(prev=>({...prev, employeeId: e.target.value}))} required><option value="">Кто принял</option>{employees.map(emp=> <option key={emp.id} value={emp.id}>{emp.name}</option>)}</select>
+                    <input type="date" className="form-input" value={form.date} onChange={e=>setForm(prev=>({...prev, date: e.target.value}))} required />
+                    <select className="form-select" value={form.condition} onChange={e=>setForm(prev=>({...prev, condition: e.target.value}))}><option>Исправный</option><option>Неисправен</option><option>Нуждается в проверке</option></select>
+                    <div className="md:col-span-3"><button className="btn-primary" type="submit">Добавить приход</button></div>
+                </form>
+            </div>
+            <h3 className="text-xl font-bold mb-2">История приходов</h3>
+            <div className="card overflow-auto"><table className="w-full"><thead><tr><th className="p-2">Дата</th><th className="p-2">Наименование</th><th className="p-2">Кол-во</th><th className="p-2">Поставщик</th><th className="p-2">Кто</th><th className="p-2">Сост.</th></tr></thead><tbody>{receipts.map(r=> <tr key={r.id} className="border-t"><td className="p-2">{r.date}</td><td className="p-2">{r.itemName}</td><td className="p-2">{r.quantity}</td><td className="p-2">{r.supplierName}</td><td className="p-2">{r.employeeName}</td><td className="p-2">{r.condition}</td></tr>)}</tbody></table></div>
+        </div>
+    );
+}
+
+/* IssuesPage */
+function IssuesPage({allItems, goods, setGoods, tools, setTools, employees, issues, setIssues}){
+    const now = new Date().toISOString().slice(0,10);
+    const [form, setForm] = useState({itemId:'', quantity:1, employeeId:'', purpose:'', date: now});
+    const [search, setSearch] = useState('');
+    const [categoryFilter, setCategoryFilter] = useState('');
+    const uniqueCats = useMemo(()=> [...new Set(allItems.map(i=>i.category).filter(Boolean))], [allItems]);
+    const filteredItems = allItems.filter(i=> (categoryFilter? i.category===categoryFilter: true)).filter(i=> smartFilter([i], search).length>0);
+    const add = (e)=>{ e.preventDefault(); const item = allItems.find(i=>i.id===form.itemId); if (!item) { alert('Выберите товар'); return; } const q = Number(form.quantity); if (isNaN(q)||q<=0){ alert('Кол-во>0'); return;} if (Number(item.quantity) < q) { alert(`Недостаточно на складе. Доступно: ${item.quantity}`); return; } const entry = { id:`I${Date.now()}`, ...form, quantity: q, itemName: item.name, employeeName: (employees.find(e=>e.id===form.employeeId)||{}).name || 'N/A' }; setIssues(prev=> [entry, ...prev]); if (item.type === 'good') setGoods(prev=> prev.map(g=> g.id===item.id ? {...g, quantity: Number(g.quantity)-q} : g)); else setTools(prev=> prev.map(t=> t.id===item.id ? {...t, quantity: Number(t.quantity)-q} : t)); setForm({itemId:'', quantity:1, employeeId:'', purpose:'', date: now}); };
+    return (
+        <div>
+            <h1 className="text-2xl font-bold mb-4">Расход товара</h1>
+            <div className="card p-4 mb-4">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-2"><input className="form-input" placeholder="Поиск..." value={search} onChange={e=>setSearch(e.target.value)} /><select className="form-select" value={categoryFilter} onChange={e=>setCategoryFilter(e.target.value)}><option value="">Все категории</option>{uniqueCats.map(c=> <option key={c} value={c}>{c}</option>)}</select></div>
+                <form onSubmit={add} className="grid grid-cols-1 md:grid-cols-3 gap-2 mt-3">
+                    <select className="form-select md:col-span-2" value={form.itemId} onChange={e=>setForm(prev=>({...prev, itemId: e.target.value}))} required><option value="">Выберите товар/инструмент</option>{filteredItems.map(i=> <option key={i.id} value={i.id}>{i.name} (ост: {i.quantity})</option>)}</select>
+                    <input type="number" className="form-input" value={form.quantity} onChange={e=>setForm(prev=>({...prev, quantity: Number(e.target.value)}))} min="1" />
+                    <select className="form-select" value={form.employeeId} onChange={e=>setForm(prev=>({...prev, employeeId: e.target.value}))} required><option value="">Кому выдано</option>{employees.map(emp=> <option key={emp.id} value={emp.id}>{emp.name}</option>)}</select>
+                    <input className="form-input md:col-span-2" placeholder="Цель" value={form.purpose} onChange={e=>setForm(prev=>({...prev, purpose: e.target.value}))} />
+                    <input type="date" className="form-input" value={form.date} onChange={e=>setForm(prev=>({...prev, date: e.target.value}))} />
+                    <div className="md:col-span-3"><button className="btn-primary" type="submit">Оформить расход</button></div>
+                </form>
+            </div>
+            <h3 className="text-xl font-bold mb-2">История расходов</h3>
+            <div className="card overflow-auto"><table className="w-full"><thead><tr><th className="p-2">Дата</th><th className="p-2">Наименование</th><th className="p-2">Кол-во</th><th className="p-2">Кому</th><th className="p-2">Цель</th></tr></thead><tbody>{issues.map(i=> <tr key={i.id} className="border-t"><td className="p-2">{i.date}</td><td className="p-2">{i.itemName}</td><td className="p-2">{i.quantity}</td><td className="p-2">{i.employeeName}</td><td className="p-2">{i.purpose}</td></tr>)}</tbody></table></div>
+        </div>
+    );
+}
+
+/* EmployeeInventoryPage */
+function EmployeeInventoryPage({issues, returnsLog, setReturnsLog, employees, allItems, setGoods, setTools}){
+    const holdings = useMemo(()=>{ const issued={}; const returned={}; issues.forEach(it=>{ if(!issued[it.employeeId]) issued[it.employeeId] = {}; issued[it.employeeId][it.itemId] = (issued[it.employeeId][it.itemId]||0) + Number(it.quantity); }); returnsLog.forEach(rt=>{ if(!returned[rt.employeeId]) returned[rt.employeeId] = {}; returned[rt.employeeId][rt.itemId] = (returned[rt.employeeId][rt.itemId]||0) + Number(rt.quantity); }); const result = []; for (const empId in issued){ const emp = employees.find(e=>e.id===empId); if(!emp) continue; const items = []; for (const itemId in issued[empId]){ const qty = issued[empId][itemId] - (returned[empId]?.[itemId] || 0); if (qty>0){ const itm = allItems.find(i=>i.id===itemId); items.push({itemId, itemName: itm?.name || 'Удалённый', quantity: qty, itemType: itm?.type}); } } if (items.length) result.push({employeeId: empId, employeeName: emp.name, items}); } return result; }, [issues, returnsLog, employees, allItems]);
+    const [modal, setModal] = useState(null);
+    const openReturn = (employee, item) => setModal({employee, item, qty:1});
+    const doReturn = () => { const {employee, item, qty} = modal; if (!qty || qty<=0 || qty>item.quantity) { alert('некорректное количество'); return; } const rec = { id:`RT${Date.now()}`, employeeId: employee.employeeId, itemId: item.itemId, itemName: item.itemName, quantity: qty, date: new Date().toISOString().slice(0,10) }; setReturnsLog(prev=> [rec, ...prev]); if (item.itemType === 'good') setGoods(prev => prev.map(g => g.id === item.itemId ? {...g, quantity: Number(g.quantity)+qty} : g)); else setTools(prev => prev.map(t => t.id === item.itemId ? {...t, quantity: Number(t.quantity)+qty} : t)); setModal(null); };
+    return (
+        <div>
+            <h1 className="text-2xl font-bold mb-4">Учет у сотрудников</h1>
+            {holdings.length===0 && <div className="card p-4">Нет выданного оборудования.</div>}
+            {holdings.map(h => (<div key={h.employeeId} className="card p-4 mb-4"><h3 className="font-semibold mb-2">{h.employeeName}</h3><table className="w-full"><thead><tr><th className="p-2">Наименование</th><th className="p-2">Кол-во</th><th className="p-2">Действие</th></tr></thead><tbody>{h.items.map(it => (<tr key={it.itemId}><td className="p-2">{it.itemName}</td><td className="p-2">{it.quantity}</td><td className="p-2"><button className="btn-secondary" onClick={()=>openReturn(h, it)}>Вернуть</button></td></tr>))}</tbody></table></div>))}
+            {modal && (<div className="modal-backdrop fixed inset-0 flex items-center justify-center"><div className="card p-4 rounded w-full max-w-md"><div className="flex justify-between"><h3>Возврат товара</h3><button onClick={()=>setModal(null)}>✕</button></div><p className="mt-2">Возврат <strong>{modal.item.itemName}</strong> от <strong>{modal.employee.employeeName}</strong>. На руках: {modal.item.quantity}</p><div className="mt-2"><input type="number" className="form-input w-full" value={modal.qty} min="1" max={modal.item.quantity} onChange={e=>setModal(prev=>({...prev, qty: Number(e.target.value)}))} /></div><div className="flex justify-end mt-2 space-x-2"><button className="btn-secondary" onClick={()=>setModal(null)}>Отмена</button><button className="btn-primary" onClick={doReturn}>Подтвердить возврат</button></div></div></div>)}
+        </div>
+    );
+}
+
+/* AssemblyPage (same as before) */
+function AssemblyPage({goods, setGoods, employees, assemblies, setAssemblies}) {
+    const [open, setOpen] = useState(false);
+    const saveAssembly = (data) => {
+        for (const component of data.components) {
+            const stockItem = goods.find(g => g.id === component.itemId);
+            const requiredQty = Number(component.quantity) * Number(data.quantity);
+            if (!stockItem || Number(stockItem.quantity) < requiredQty) {
+                alert(`Недостаточно компонента "${component.itemName}" на складе! Требуется: ${requiredQty}, в наличии: ${stockItem ? stockItem.quantity : 0}`);
+                return;
+            }
+        }
+        let updatedGoods = [...goods];
+        for (const component of data.components) {
+            const requiredQty = Number(component.quantity) * Number(data.quantity);
+            updatedGoods = updatedGoods.map(g => g.id === component.itemId ? { ...g, quantity: Number(g.quantity) - requiredQty } : g);
+        }
+        setGoods(updatedGoods);
+        const newAssembly = { id: `A${Date.now()}`, ...data, employeeName: employees.find(e => e.id === data.employeeId)?.name || 'N/A' };
+        setAssemblies(prev => [newAssembly, ...prev]);
+        setOpen(false);
+    };
+    return (
+        <div>
+            <div className="flex justify-between items-center mb-4">
+                <h1 className="text-2xl font-bold">Сборка / Реновация</h1>
+                <button className="btn-primary" onClick={()=>setOpen(true)}><PlusIcon/> Добавить запись</button>
+            </div>
+            <div className="card overflow-auto">
+                <table className="w-full">
+                    <thead><tr><th className="p-2">Аппарат</th><th className="p-2">Компоненты (на 1)</th><th className="p-2">Кол-во собрано</th><th className="p-2">Дата</th><th className="p-2">Ответственный</th></tr></thead>
+                    <tbody>{assemblies.map(a => (<tr key={a.id} className="border-t"><td className="p-2">{a.name}</td><td className="p-2">{a.components.map(c=>`${c.itemName}: ${c.quantity}`).join(', ')}</td><td className="p-2">{a.quantity}</td><td className="p-2">{a.date}</td><td className="p-2">{a.employeeName}</td></tr>))}</tbody>
+                </table>
+            </div>
+            {open && <AssemblyModal onClose={()=>setOpen(false)} onSave={saveAssembly} goods={goods} employees={employees} />}
+        </div>
+    );
+}
+
+function AssemblyModal({onClose, onSave, goods, employees}){
+    const [form, setForm] = useState({name:'', type:'Новый', employeeId:'', date:new Date().toISOString().slice(0,10), quantity:1, components:[{itemId:'', itemName:'', quantity:1}]});
+    const change = (k,v) => setForm(prev=>({...prev, [k]:v}));
+    const changeComp = (idx, k, v) => { const arr = [...form.components]; arr[idx][k] = v; if (k==='itemId') { const sel = goods.find(g=>g.id===v); arr[idx].itemName = sel? sel.name: ''; } setForm(prev=>({...prev, components:arr})); };
+    const addComp = ()=> setForm(prev=>({...prev, components:[...prev.components, {itemId:'', itemName:'', quantity:1}]}));
+    const removeComp = (i) => setForm(prev=>({...prev, components: prev.components.filter((_,idx)=>idx!==i)}));
+    const submit = (e)=>{ e.preventDefault(); onSave(form); };
+    return (
+        <div className="modal-backdrop fixed inset-0 flex items-center justify-center"><div className="card p-4 rounded w-full max-w-3xl"><div className="flex justify-between"><h3>Новая сборка</h3><button onClick={onClose}>✕</button></div><form onSubmit={submit} className="space-y-2 mt-2 max-h-[70vh] overflow-auto"><div className="grid grid-cols-2 gap-2"><input className="form-input" value={form.name} onChange={e=>change('name', e.target.value)} placeholder="Название аппарата" required /><input type="number" className="form-input" value={form.quantity} onChange={e=>change('quantity', Number(e.target.value))} min="1" required /><select className="form-select" value={form.type} onChange={e=>change('type', e.target.value)}><option>Новый</option><option>Реновация</option></select><select className="form-select" value={form.employeeId} onChange={e=>change('employeeId', e.target.value)} required><option value="">Ответственный</option>{employees.map(e=> <option key={e.id} value={e.id}>{e.name}</option>)}</select><input type="date" className="form-input col-span-2" value={form.date} onChange={e=>change('date', e.target.value)} /></div><h4 className="font-semibold mt-2">Компоненты</h4>{form.components.map((c, idx)=>(<div key={idx} className="flex gap-2 items-center"><select className="form-select flex-1" value={c.itemId} onChange={e=>changeComp(idx, 'itemId', e.target.value)} required><option value="">Выберите компонент</option>{goods.map(g=> <option key={g.id} value={g.id}>{g.name} (ост: {g.quantity})</option>)}</select><input type="number" className="form-input w-28" value={c.quantity} onChange={e=>changeComp(idx, 'quantity', Number(e.target.value))} min="1" required /><button type="button" className="text-red-500" onClick={()=>removeComp(idx)}><TrashIcon/></button></div>))}<button type="button" className="btn-secondary" onClick={addComp}>Добавить компонент</button><div className="flex justify-end space-x-2"><button type="button" className="btn-secondary" onClick={onClose}>Отмена</button><button type="submit" className="btn-primary">Сохранить сборку</button></div></form></div></div>
+    );
+}
+
+/* Machines page */
+function MachinesPage({machines, setMachines, goods}){
+    const [open, setOpen] = useState(false); const [editing, setEditing] = useState(null);
+    const save = (m) => { if (m.id) setMachines(prev=> prev.map(x=> x.id===m.id? m : x)); else setMachines(prev=> [{...m, id:`M${Date.now()}`}, ...prev]); setOpen(false); setEditing(null); };
+    const remove = (id)=>{ if (confirm('Удалить аппарат?')) setMachines(prev=> prev.filter(m=> m.id!==id)); };
+    return (<div><div className="flex justify-between items-center mb-4"><h1 className="text-2xl font-bold">Аппараты</h1><button className="btn-primary" onClick={()=>{setEditing(null); setOpen(true);}}><PlusIcon/> Добавить аппарат</button></div><div className="space-y-4">{machines.length===0 && <div className="card p-4">Список аппаратов пуст</div>}{machines.map(m=> (<div key={m.id} className="card p-4 flex gap-4"><div style={{width:120, height:80, background:'#f4f4f4'}} className="flex items-center justify-center">{m.image ? <img src={m.image} alt={m.name} style={{maxWidth:'100%', maxHeight:'100%'}} /> : <div>Изображение</div>}</div><div className="flex-1"><div className="font-semibold">{m.name}</div><div className="text-sm text-gray-600">Тип: {m.type}</div><div className="mt-2 text-sm">Компоненты:<ul className="list-disc pl-5">{m.components && m.components.map((c, idx)=> { const stock = goods.find(g=>g.id===c.itemId); return <li key={idx}>{c.itemName || '—'}: нужно {c.quantity} (в наличии: {stock?stock.quantity:0})</li> })}</ul></div><div className="mt-2"><button className="mr-2" onClick={()=>{setEditing(m); setOpen(true);}}><PencilIcon/></button><button className="text-red-500" onClick={()=>remove(m.id)}><TrashIcon/></button></div></div><div className="w-64"><MissingForMachine machine={m} goods={goods}/></div></div>))}</div>{open && <MachineModal machine={editing} onClose={()=>{setOpen(false); setEditing(null);}} onSave={save} goods={goods} />}</div>);
+}
+
+function MissingForMachine({machine, goods}){
+    const [qty, setQty] = useState(1);
+    const missing = (machine.components||[]).map(c=>{ const stock = goods.find(g=>g.id===c.itemId); const need = Number(c.quantity)*Number(qty); const have = stock? Number(stock.quantity):0; return {itemName: c.itemName, need, have, missing: Math.max(0, need-have)}; });
+    return (<div><div className="text-sm mb-2">Проверить наличие для сборки</div><div className="flex gap-2 items-center mb-2"><input type="number" className="form-input w-24" value={qty} min="1" onChange={e=>setQty(Number(e.target.value))} /><div>шт.</div></div><ul className="text-sm">{missing.map((m, idx)=> <li key={idx}>{m.itemName}: нужно {m.need}, есть {m.have} — {m.missing>0? <span className="text-red-500">недостаток {m.missing}</span> : <span className="text-green-600">есть</span>}</li>)}</ul></div>);
+}
+
+function MachineModal({machine, onClose, onSave, goods}){
+    const [form, setForm] = useState(machine || {name:'', type:'Аппарат', image:'', components:[{itemId:'', itemName:'', quantity:1}]});
+    const change = (k,v)=> setForm(prev=>({...prev, [k]:v}));
+    const changeComp = (i,k,v)=> { const arr = [...form.components]; arr[i][k] = v; if (k==='itemId'){ const sel = goods.find(g=>g.id===v); arr[i].itemName = sel? sel.name: ''; } setForm(prev=>({...prev, components: arr})); };
+    const addComp = ()=> setForm(prev=>({...prev, components:[...prev.components, {itemId:'', itemName:'', quantity:1}]}));
+    const removeComp = (i)=> setForm(prev=>({...prev, components: prev.components.filter((_,idx)=>idx!==i)}));
+    const handleImage = (e)=> { const file = e.target.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = (ev)=> setForm(prev=>({...prev, image: ev.target.result})); reader.readAsDataURL(file); };
+    const submit = (e)=> { e.preventDefault(); onSave(form); };
+    return (<div className="modal-backdrop fixed inset-0 flex items-center justify-center"><div className="card p-4 rounded w-full max-w-3xl"><div className="flex justify-between"><h3>{machine? 'Редактировать аппарат' : 'Новый аппарат'}</h3><button onClick={onClose}>✕</button></div><form onSubmit={submit} className="space-y-2 mt-2 max-h-[70vh] overflow-auto"><input className="form-input w-full" value={form.name} onChange={e=>change('name', e.target.value)} placeholder="Название" required /><input className="form-input w-full" value={form.type} onChange={e=>change('type', e.target.value)} placeholder="Тип" /><div><label className="text-sm">Изображение (файл):</label><input type="file" accept="image/*" onChange={handleImage} /><div className="mt-2">{form.image ? <img src={form.image} alt="preview" style={{maxWidth:150}} /> : null}</div></div><h4 className="font-semibold">Компоненты</h4>{form.components.map((c, idx)=>(<div key={idx} className="flex gap-2 items-center"><select className="form-select flex-1" value={c.itemId} onChange={e=>changeComp(idx, 'itemId', e.target.value)} required><option value="">Выберите товар</option>{goods.map(g=> <option key={g.id} value={g.id}>{g.name} (ост: {g.quantity})</option>)}</select><input type="number" className="form-input w-28" value={c.quantity} onChange={e=>changeComp(idx, 'quantity', Number(e.target.value))} min="1" required /><button type="button" className="text-red-500" onClick={()=>removeComp(idx)}><TrashIcon/></button></div>))}<button type="button" className="btn-secondary" onClick={addComp}>Добавить компонент</button><div className="flex justify-end space-x-2"><button className="btn-secondary" type="button" onClick={onClose}>Отмена</button><button className="btn-primary" type="submit">Сохранить</button></div></form></div></div>);
+}
+
+/* Repairs Page */
+function RepairsPage({allItems, goods, setGoods, tools, setTools, repairs, setRepairs}){
+    const now = new Date().toISOString().slice(0,10);
+    const [form, setForm] = useState({itemId:'', quantity:1, fromStatus:'Исправный', toStatus:'Неисправен', date: now, notes:''});
+    const [search, setSearch] = useState('');
+    const filteredItems = allItems.filter(i=> smartFilter([i], search).length>0);
+    const add = (e)=>{ e.preventDefault(); const item = allItems.find(i=>i.id===form.itemId); if (!item) { alert('Выберите товар'); return; } const q = Number(form.quantity); if (isNaN(q)||q<=0){ alert('кол-во > 0'); return;} const rec = { id:`RP${Date.now()}`, ...form, quantity: q, itemName: item.name }; setRepairs(prev=> [rec, ...prev]); if (item.type==='good'){ setGoods(prev=> prev.map(g=> { if (g.id!==item.id) return g; let newQty = Number(g.quantity); if (form.toStatus === 'Списан'){ const dec = Math.min(newQty, q); newQty = newQty - dec; } return {...g, status: form.toStatus, quantity: newQty}; })); } else { setTools(prev=> prev.map(t=> { if (t.id!==item.id) return t; let newQty = Number(t.quantity); if (form.toStatus === 'Списан'){ const dec = Math.min(newQty, q); newQty = newQty - dec; } return {...t, status: form.toStatus, quantity: newQty}; })); } setForm({itemId:'', quantity:1, fromStatus:'Исправный', toStatus:'Неисправен', date: now, notes:''}); };
+    return (<div><h1 className="text-2xl font-bold mb-4">Ремонты / Работы от склада</h1><div className="card p-4 mb-4"><input className="form-input w-full mb-2" placeholder="Поиск..." value={search} onChange={e=>setSearch(e.target.value)} /><form onSubmit={add} className="grid grid-cols-1 md:grid-cols-3 gap-2"><select className="form-select" value={form.itemId} onChange={e=>setForm(prev=>({...prev, itemId: e.target.value}))} required><option value="">Выберите товар/инструмент</option>{filteredItems.map(i=> <option key={i.id} value={i.id}>{i.name} (ост: {i.quantity})</option>)}</select><input type="number" className="form-input" value={form.quantity} onChange={e=>setForm(prev=>({...prev, quantity: Number(e.target.value)}))} min="1" /><select className="form-select" value={form.fromStatus} onChange={e=>setForm(prev=>({...prev, fromStatus: e.target.value}))}><option>Исправный</option><option>Неисправен</option><option>Нуждается в проверке</option></select><select className="form-select" value={form.toStatus} onChange={e=>setForm(prev=>({...prev, toStatus: e.target.value}))}><option>Исправный</option><option>Неисправен</option><option>Нуждается в проверке</option><option>Списан</option></select><input type="date" className="form-input" value={form.date} onChange={e=>setForm(prev=>({...prev, date: e.target.value}))} /><input className="form-input md:col-span-3" placeholder="Примечания" value={form.notes} onChange={e=>setForm(prev=>({...prev, notes: e.target.value}))} /><div className="md:col-span-3"><button className="btn-primary" type="submit">Сохранить ремонт / работу</button></div></form></div><h3 className="text-xl font-bold mb-2">Журнал ремонтов</h3><div className="card overflow-auto"><table className="w-full"><thead><tr><th className="p-2">Дата</th><th className="p-2">Наименование</th><th className="p-2">Кол-во</th><th className="p-2">Из статуса</th><th className="p-2">В статус</th><th className="p-2">Прим.</th></tr></thead><tbody>{repairs.map(r=> <tr key={r.id} className="border-t"><td className="p-2">{r.date}</td><td className="p-2">{r.itemName}</td><td className="p-2">{r.quantity}</td><td className="p-2">{r.fromStatus}</td><td className="p-2">{r.toStatus}</td><td className="p-2">{r.notes}</td></tr>)}</tbody></table></div></div>);
+}
+
+/* MovementsPage */
+function MovementsPage({allItems, receipts, issues, returnsLog, assemblies, repairs}){
+    const [itemId, setItemId] = useState(''); const [dateFrom, setDateFrom] = useState(''); const [dateTo, setDateTo] = useState(''); const [filterName, setFilterName] = useState('');
+    const collect = ()=>{
+        if (!itemId) return [];
+        const combine = [];
+        receipts.forEach(r=> { if (r.itemId === itemId) combine.push({date: r.date, type: 'Приход', qty: Number(r.quantity), info: `Поставщик: ${r.supplierName}`}); });
+        issues.forEach(i=> { if (i.itemId === itemId) combine.push({date: i.date, type: 'Расход', qty: -Number(i.quantity), info: `Кому: ${i.employeeName}`}); });
+        returnsLog.forEach(r=> { if (r.itemId === itemId) combine.push({date: r.date, type: 'Возврат', qty: Number(r.quantity), info: `Возврат от сотрудника`}); });
+        assemblies.forEach(a=> { if (a.components && Array.isArray(a.components)){ const c = a.components.find(cc=> cc.itemId === itemId); if (c) combine.push({date: a.date, type: 'Сборка', qty: -Number(c.quantity)*Number(a.quantity), info: `Сборка: ${a.name}`}); } });
+        repairs.forEach(r=> { if (r.itemId === itemId) combine.push({date: r.date, type: 'Ремонт', qty: r.toStatus === 'Списан' ? -Number(r.quantity) : 0, info: `Ремонт: ${r.fromStatus}→${r.toStatus}`}); });
+        const from = dateFrom ? new Date(dateFrom) : null; const to = dateTo ? new Date(dateTo) : null;
+        return combine.filter(c=> { if (from && new Date(c.date) < from) return false; if (to && new Date(c.date) > to) return false; return true; }).sort((a,b)=> new Date(b.date) - new Date(a.date));
+    };
+    const movements = collect();
+    return (<div><h1 className="text-2xl font-bold mb-4">Перемещения товара</h1><div className="card p-4 mb-4"><div className="grid grid-cols-1 md:grid-cols-4 gap-2"><select className="form-select" value={itemId} onChange={e=>{ setItemId(e.target.value); setFilterName((allItems.find(x=>x.id===e.target.value)||{}).name || ''); }}><option value="">Выберите товар</option>{allItems.map(i=> <option key={i.id} value={i.id}>{i.name}</option>)}</select><input type="date" className="form-input" value={dateFrom} onChange={e=>setDateFrom(e.target.value)} /><input type="date" className="form-input" value={dateTo} onChange={e=>setDateTo(e.target.value)} /><div className="flex items-center"><div className="font-semibold">{filterName}</div></div></div></div><div className="card overflow-auto"><table className="w-full"><thead><tr><th className="p-2">Дата</th><th className="p-2">Тип</th><th className="p-2">Кол-во</th><th className="p-2">Примечание</th></tr></thead><tbody>{movements.map((m,idx)=> <tr key={idx} className="border-t"><td className="p-2">{m.date}</td><td className="p-2">{m.type}</td><td className="p-2">{m.qty}</td><td className="p-2">{m.info}</td></tr>)}{movements.length===0 && <tr><td className="p-2" colSpan="4">Нет перемещений по заданным фильтрам</td></tr>}</tbody></table></div></div>);
+}
+
+/* Analytics */
+function AnalyticsPage({goods, receipts, issues, assemblies}){
+    const popular = useMemo(()=> { const counts = {}; [...receipts, ...issues].forEach(t=> { counts[t.itemName] = (counts[t.itemName]||0)+Number(t.quantity); }); assemblies.forEach(a=> { if (!a.components) return; a.components.forEach(c=> { counts[c.itemName] = (counts[c.itemName]||0) + Number(c.quantity)*Number(a.quantity); }); }); return Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,5); }, [receipts, issues, assemblies]);
+    const low = goods.filter(g=> Number(g.quantity) < 10).sort((a,b)=>a.quantity-b.quantity);
+    return (<div><h1 className="text-2xl font-bold mb-4">Аналитика</h1><div className="grid grid-cols-1 md:grid-cols-2 gap-4"><div className="card p-4"><h3 className="font-semibold mb-2">Топ 5 по обороту</h3><ul>{popular.map(([name,count],idx)=> <li key={name}>{idx+1}. {name} — {count} шт.</li>)}</ul></div><div className="card p-4"><h3 className="font-semibold mb-2">Низкий остаток (&lt;10)</h3><ul>{low.map(g=> <li key={g.id}>{g.name} — {g.quantity} шт.</li>)}</ul></div></div></div>);
+}
+
+/* SettingsPage with full CRUD for suppliers, employees, categories */
+function SettingsPage({suppliers, setSuppliers, employees, setEmployees, categories, setCategories}){
+    const [sname, setSname] = useState(''); const [ename, setEname] = useState(''); const [cname, setCname] = useState('');
+    const addSupplier = ()=> { if (!sname.trim()) return; setSuppliers(prev=> [...prev, {id:`S${Date.now()}`, name: sname.trim()}]); setSname(''); };
+    const addEmployee = ()=> { if (!ename.trim()) return; setEmployees(prev=> [...prev, {id:`E${Date.now()}`, name: ename.trim()}]); setEname(''); };
+    const addCategory = ()=> { if (!cname.trim()) return; setCategories(prev=> [...prev, {id:`C${Date.now()}`, name: cname.trim()}]); setCname(''); };
+    const editItem = (list, setter, id, newName) => setter(list.map(it=> it.id===id? {...it, name: newName} : it));
+    const deleteItem = (list, setter, id) => { if (confirm('Удалить?')) setter(list.filter(it=> it.id!==id)); };
+    return (<div><h1 className="text-2xl font-bold mb-4">Настройки</h1><div className="grid grid-cols-1 md:grid-cols-3 gap-4"><div className="card p-4"><h3 className="font-semibold mb-2">Поставщики</h3><ul className="space-y-1">{suppliers.map(s=> (<li key={s.id} className="flex items-center gap-2"><input className="form-input flex-1" value={s.name} onChange={e=>editItem(suppliers, setSuppliers, s.id, e.target.value)} /><button className="text-red-500" onClick={()=>deleteItem(suppliers, setSuppliers, s.id)}>✕</button></li>))}</ul><div className="mt-2"><input className="form-input w-full" value={sname} onChange={e=>setSname(e.target.value)} placeholder="Новый поставщик" /><button className="btn-primary mt-2 w-full" onClick={addSupplier}>Добавить</button></div></div><div className="card p-4"><h3 className="font-semibold mb-2">Сотрудники</h3><ul className="space-y-1">{employees.map(emp=> (<li key={emp.id} className="flex items-center gap-2"><input className="form-input flex-1" value={emp.name} onChange={e=>editItem(employees, setEmployees, emp.id, e.target.value)} /><button className="text-red-500" onClick={()=>deleteItem(employees, setEmployees, emp.id)}>✕</button></li>))}</ul><div className="mt-2"><input className="form-input w-full" value={ename} onChange={e=>setEname(e.target.value)} placeholder="Новый сотрудник" /><button className="btn-primary mt-2 w-full" onClick={addEmployee}>Добавить</button></div></div><div className="card p-4"><h3 className="font-semibold mb-2">Категории</h3><ul className="space-y-1">{categories.map(c=> (<li key={c.id} className="flex items-center gap-2"><input className="form-input flex-1" value={c.name} onChange={e=>editItem(categories, setCategories, c.id, e.target.value)} /><button className="text-red-500" onClick={()=>deleteItem(categories, setCategories, c.id)}>✕</button></li>))}</ul><div className="mt-2"><input className="form-input w-full" value={cname} onChange={e=>setCname(e.target.value)} placeholder="Новая категория" /><button className="btn-primary mt-2 w-full" onClick={addCategory}>Добавить</button></div></div></div></div>);
+}
+
+/* Render */
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+
+</script>
+
+<script>
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js').then(()=>console.log('SW registered')).catch(()=>console.log('SW failed'));
+}
+</script>
+</body>
+</html>
