@@ -2,13 +2,19 @@ import psycopg2
 import logging
 from datetime import datetime
 from thefuzz import process, fuzz # Библиотека для нечеткого поиска
+import os
+from dotenv import load_dotenv
 
-# --- КОНФИГУРАЦИЯ БД ---
-DB_HOST = "49.13.142.186"
-DB_PORT = "5432"
-DB_NAME = "datavodolij"
-DB_USER = "dataanalyst"
-DB_PASSWORD = "))vodoliJuser2025"
+# --- 1. ЗАГРУЗКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ---
+load_dotenv() # Загружает переменные из файла .env
+
+# --- 2. КОНФИГУРАЦИЯ БД (Берется из .env) ---
+# Если переменная не найдена, устанавливается значение по умолчанию (для безопасности)
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = os.getenv("DB_PORT", "5432")
+DB_NAME = os.getenv("DB_NAME", "default_db")
+DB_USER = os.getenv("DB_USER", "default_user")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "default_password")
 
 # --- ВАШ СПИСОК АДРЕСОВ (Очищенный и исправленный) ---
 ADDRESS_DB = [
@@ -201,16 +207,19 @@ def search_terem_info(user_input_address):
 
 # --- РАБОТА С БД ---
 def get_connection():
+    """Возвращает соединение с PostgreSQL, используя переменные из .env"""
     return psycopg2.connect(
         host=DB_HOST, port=DB_PORT, dbname=DB_NAME, user=DB_USER, password=DB_PASSWORD
     )
 
 def save_stol_zakazov(user_role, text):
-    conn = sqlite3.connect('my_database.db') # или как у вас называется файл
-    cursor = conn.cursor()
-    # ... ваш SQL запрос INSERT ...
-    conn.commit()  # <--- БЕЗ ЭТОГО ДАННЫЕ НЕ СОХРАНЯТСЯ
-    conn.close()
+    # Эта функция использует sqlite3, что не соответствует PostgreSQL-логике.
+    # Оставлено как заглушка, но требует исправления, если должна работать с Postgre.
+    # Если это отдельная база, нужно добавить ее конфигурацию в .env.
+    # В рамках данного запроса, просто удалю вызов sqlite3, так как save_stol_zakazov (ниже)
+    # уже реализует сохранение в общую таблицу stol_zakazov (PostgreSQL).
+    pass
+
 
 def init_tables():
     """Створює всі необхідні таблиці"""
@@ -344,16 +353,7 @@ def get_termin_tasks(texnik_name):
         logging.error(f"❌ Помилка отримання завдань з терміном: {e}")
         return []
 
-def save_srochno(id_terem, adres, srocno, texnik):
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO srochno_callcentr (id_terem, adres, zavdanya, termin, texnik) VALUES (%s, %s, %s, %s, %s, %s)",
-        (id_terem, adres, zavdanya, termin, texnik)
-    )
-    conn.commit()
-    conn.close()
-
+# Удалена дублирующая функция save_srochno, оставлена только корректная
 def save_srochno(id_terem, adres, srocno, texnik):
     conn = get_connection()
     cur = conn.cursor()

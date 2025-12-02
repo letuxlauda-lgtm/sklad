@@ -1,6 +1,8 @@
 import asyncio
 import logging
-import aiohttp # Добавляем для запросов в интернет
+import aiohttp 
+import os # <-- НОВЫЙ ИМПОРТ: для работы с переменными среды
+from dotenv import load_dotenv # <-- НОВЫЙ ИМПОРТ: для чтения файла .env
 from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.enums import ParseMode
@@ -8,6 +10,10 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 import database as db
+
+# --- ЗАВАНТАЖЕННЯ ЗМІННИХ СЕРЕДОВИЩА ---
+load_dotenv()
+BOT_TOKEN = os.getenv("BOT_TOKEN") # <-- ТОКЕН БЕРЕТСЯ ИЗ ПЕРЕМЕННОЙ СРЕДЫ
 
 # Импортируем роутеры (как в твоем файле)
 from handlers_callcenter import router as callcenter_router, get_main_menu
@@ -18,8 +24,9 @@ from handlers_finance import router as finance_router
 from handlers_super import router as super_router, SuperRole, get_super_menu
 from handlers_texdir import router as texdir_router, TexdirRole, get_texdir_menu 
 
-# --- НАСТРОЙКИ ---
-BOT_TOKEN = "8108429536:AAE0LhcGQuioGjARBLmhCOJ6_A_A4nRVQLY"
+
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN не знайдено в файлі .env") # Проверка на наличие токена
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
 
@@ -119,4 +126,6 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
+    # Убедитесь, что у вас установлена библиотека python-dotenv
+    # pip install python-dotenv
     asyncio.run(main())

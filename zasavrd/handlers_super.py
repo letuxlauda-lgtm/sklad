@@ -223,52 +223,25 @@ async def show_analytics(message: types.Message):
 
 @router.message(SuperRole.online, F.text.contains("інкі 1тиж"))
 async def report_inki_week(message: types.Message):
-    """Формирует отчет по инкассациям за 7 дней из БАЗЫ ДАННЫХ (таблица inki5nedel)"""
+    """Формирует отчет по инкассациям за 7 дней из файла exports/inki5nedel.csv"""
     
-    status_msg = await message.answer("⏳ Подключаюсь к БД и формирую отчет...")
+    status_msg = await message.answer("⏳ Формирую отчет по инкассациям за 7 дней...")
 
-    conn = None
     try:
-        # Параметры подключения
-        db_config = {
-            'host': os.getenv('DB_HOST'),
-            'port': os.getenv('DB_PORT', '5432'),
-            'database': os.getenv('DB_NAME'),
-            'user': os.getenv('DB_USER'),
-            'password': os.getenv('DB_PASSWORD')
-        }
-
-        # 1. Подключение и получение данных
-        conn = psycopg2.connect(**db_config)
+        # Путь к файлу
+        csv_path = os.path.join("exports", "inki5nedel.csv")
         
-        # Читаем основную таблицу inki5nedel
-        query = "SELECT * FROM inki5nedel"
-        df = pd.read_sql_query(query, conn)
-        
-        # Читаем таблицу привязки техников (для заполнения пропусков)
-        # Предполагаем, что таблица называется 'privyazka_aparat_texnik' или аналогично
-        query_tech = "SELECT id_terem, texnik FROM privyazka_aparat_texnik"
-        try:
-            df_tech_map = pd.read_sql_query(query_tech, conn)
-        except Exception:
-            # Если таблицы нет, создаем пустой DF, чтобы код не упал
-            df_tech_map = pd.DataFrame(columns=['id_terem', 'texnik'])
-
-        conn.close() # Закрываем соединение, данные уже в pandas
-
-        # Проверяем, есть ли данные
-        if df.empty:
-            await status_msg.edit_text("📂 Таблица inki5nedel в базе данных пуста.")
+        if not os.path.exists(csv_path):
+            await status_msg.edit_text("❌ Файл exports/inki5nedel.csv не найден!")
             return
 
+        # Читаем CSV файл
+        df = pd.read_csv(csv_path, encoding="utf-8-sig")
+        
         # Проверяем наличие необходимых колонок
         required_cols = ['device_id', 'address', 'date', 'banknotes', 'coins', 'tech']
-        # Приводим названия колонок к нижнему регистру для надежности
-        df.columns = [c.lower() for c in df.columns]
-        
         if not all(col in df.columns for col in required_cols):
-            missing = [col for col in required_cols if col not in df.columns]
-            await status_msg.edit_text(f"❌ В таблице БД не хватает колонок: {missing}")
+            await status_msg.edit_text("❌ CSV файл не содержит необходимых колонок!")
             return
 
         # Конвертируем дату
@@ -291,45 +264,47 @@ async def report_inki_week(message: types.Message):
             return
 
         # Убедимся, что у всех записей есть техник
-        # Ищем строки, где техник не указан или равен 'unknown'
-        mask_missing = df_week['tech'].isin(['unknown', '   -   ', '', None])
-        
-        if mask_missing.any() and not df_tech_map.empty:
-            # Создаем словарь {id: tech}
-            # Убедимся, что ID - это целые числа для корректного сопоставления
-            df_tech_map['id_terem'] = pd.to_numeric(df_tech_map['id_terem'], errors='coerce').fillna(0).astype(int)
-            tech_mapping = dict(zip(df_tech_map['id_terem'], df_tech_map['texnik']))
-
-            # Проходим по строкам без техника и пытаемся найти его
-            for idx in df_week[mask_missing].index:
-                try:
-                    dev_id = int(df_week.at[idx, 'device_id'])
-                    found_tech = tech_mapping.get(dev_id)
-                    if found_tech:
-                        df_week.at[idx, 'tech'] = found_tech
-                except (ValueError, TypeError):
-                    pass
+        missing_tech = df_week[df_week['tech'].isin(['unknown', '   -   ', ''])]
+        if not missing_tech.empty:
+            # Попробуем заполнить недостающие техники из базы данных
+            from database import ADDRESS_DB
+            
+            # Создаем словарь для поиска техника по device_id
+            tech_mapping = {}
+            for item in ADDRESS_DB:
+                tech_mapping[item['id_terem']] = item['texnik']
+            
+            # Функция для поиска техника
+            def find_tech_by_device_id(device_id):
+                return tech_mapping.get(device_id, 'unknown')
+            
+            # Применяем поиск техника для записей без техника
+            for idx, row in missing_tech.iterrows():
+                device_id = row['device_id']
+                if pd.notna(device_id):
+                    try:
+                        tech = find_tech_by_device_id(int(device_id))
+                        df_week.at[idx, 'tech'] = tech
+                    except (ValueError, TypeError):
+                        pass
 
         # Формируем отчет
         report_lines = []
         report_lines.append("==================================================")
-        report_lines.append("📊 ОТЧЕТ ПО ИНКАСАЦИЯМ за 7 дней (из БД)")
+        report_lines.append("📊 ОТЧЕТ ПО ИНКАСАЦИЯМ за 7 дней")
         report_lines.append("==================================================")
         
         # Группируем по техникам (только известные техники)
         known_techs = ['ruslan', 'igor', 'dmutro']
-        # Приводим к нижнему регистру для сравнения
-        df_week['tech_lower'] = df_week['tech'].astype(str).str.lower().str.strip()
-        
-        df_known = df_week[df_week['tech_lower'].isin(known_techs)]
-        df_unknown = df_week[~df_week['tech_lower'].isin(known_techs)]
+        df_known = df_week[df_week['tech'].isin(known_techs)]
+        df_unknown = df_week[~df_week['tech'].isin(known_techs)]
         
         # Для подозрительных инкассаций
         suspicious = []
         
         # Обрабатываем известных техников
         for tech in known_techs:
-            tech_data = df_known[df_known['tech_lower'] == tech].copy()
+            tech_data = df_known[df_known['tech'] == tech].copy()
             
             if tech_data.empty:
                 continue
@@ -341,8 +316,7 @@ async def report_inki_week(message: types.Message):
                 'banknotes': 'sum',
                 'coins': 'sum',
                 'address': 'first',
-                'date': 'max',
-                'tech': 'first' # Сохраняем оригинальное написание имени
+                'date': 'max'
             }).reset_index()
             
             # Отделяем подозрительные инкассации
@@ -364,7 +338,7 @@ async def report_inki_week(message: types.Message):
                         'banknotes': banknotes,
                         'coins': coins,
                         'date': date_str,
-                        'tech': row['tech']
+                        'tech': tech
                     })
                 else:
                     normal_devices.append(row)
@@ -403,8 +377,7 @@ async def report_inki_week(message: types.Message):
                 'banknotes': 'sum',
                 'coins': 'sum',
                 'address': 'first',
-                'date': 'max',
-                'tech': 'first'
+                'date': 'max'
             }).reset_index()
             
             # Отделяем подозрительные инкассации
@@ -426,7 +399,7 @@ async def report_inki_week(message: types.Message):
                         'banknotes': banknotes,
                         'coins': coins,
                         'date': date_str,
-                        'tech': str(row['tech'])
+                        'tech': 'unknown'
                     })
                 else:
                     normal_unknown.append(row)
@@ -489,12 +462,7 @@ async def report_inki_week(message: types.Message):
                 await asyncio.sleep(0.3)
 
     except Exception as e:
-        if conn:
-            conn.close()
-        try:
-            await status_msg.delete()
-        except:
-            pass
+        await status_msg.delete()
         await message.answer(f"❌ Ошибка при формировании отчета: {e}")
         import logging
         import traceback
@@ -506,87 +474,72 @@ async def report_inki_week(message: types.Message):
 # =======================================================
 @router.message(SuperRole.online, F.text.contains("інкі 5тиж"))
 async def report_inki_5weeks(message: types.Message):
-    """Формирует отчет по инкассациям за 5 недель из БАЗЫ ДАННЫХ"""
+    """Формирует отчет по инкассациям за 5 недель из файла exports/inki5nedel.csv"""
     
-    status_msg = await message.answer("⏳ Подключаюсь к БД и формирую отчет за 5 недель...")
+    status_msg = await message.answer("⏳ Формирую отчет по инкассациям за 5 недель...")
 
-    conn = None
     try:
-        # DB Connection Parameters
-        db_config = {
-            'host': os.getenv('DB_HOST'),
-            'port': os.getenv('DB_PORT', '5432'),
-            'database': os.getenv('DB_NAME'),
-            'user': os.getenv('DB_USER'),
-            'password': os.getenv('DB_PASSWORD')
-        }
-
-        # 1. Connect and Fetch Data
-        conn = psycopg2.connect(**db_config)
+        # Путь к файлу
+        csv_path = os.path.join("exports", "inki5nedel.csv")
         
-        # Read the main data table
-        query = "SELECT * FROM inki5nedel"
-        df = pd.read_sql_query(query, conn)
-        
-        # Read technician mapping table (to fill missing techs)
-        query_tech = "SELECT id_terem, texnik FROM privyazka_aparat_texnik"
-        try:
-            df_tech_map = pd.read_sql_query(query_tech, conn)
-        except Exception:
-            df_tech_map = pd.DataFrame(columns=['id_terem', 'texnik'])
-
-        conn.close()
-
-        # Check if data exists
-        if df.empty:
-            await status_msg.edit_text("📂 Таблица inki5nedel в базе данных пуста.")
+        if not os.path.exists(csv_path):
+            await status_msg.edit_text("❌ Файл exports/inki5nedel.csv не найден!")
             return
 
-        # Normalize column names to lowercase
-        df.columns = [c.lower() for c in df.columns]
-
-        # Check for required columns
+        # Читаем CSV файл
+        df = pd.read_csv(csv_path, encoding="utf-8-sig")
+        
+        # Проверяем наличие необходимых колонок
         required_cols = ['device_id', 'address', 'date', 'banknotes', 'coins', 'tech']
         if not all(col in df.columns for col in required_cols):
-            missing = [col for col in required_cols if col not in df.columns]
-            await status_msg.edit_text(f"❌ В таблице БД не хватает колонок: {missing}")
+            await status_msg.edit_text("❌ CSV файл не содержит необходимых колонок!")
             return
 
-        # Convert data types
+        # Конвертируем дату
         df['date'] = pd.to_datetime(df['date'], errors='coerce')
         df = df.dropna(subset=['date'])
         
+        # Конвертируем суммы в числа
         df['banknotes'] = pd.to_numeric(df['banknotes'], errors='coerce').fillna(0)
         df['coins'] = pd.to_numeric(df['coins'], errors='coerce').fillna(0)
         
-        # Fill missing techs
+        # Заполняем пустые техники
         df['tech'] = df['tech'].fillna('unknown')
         
-        # 2. Logic to fill missing technicians from DB mapping
-        mask_missing = df['tech'].isin(['unknown', '   -   ', '', None])
-        
-        if mask_missing.any() and not df_tech_map.empty:
-            # Ensure IDs are integers
-            df_tech_map['id_terem'] = pd.to_numeric(df_tech_map['id_terem'], errors='coerce').fillna(0).astype(int)
-            tech_mapping = dict(zip(df_tech_map['id_terem'], df_tech_map['texnik']))
+        # Убедимся, что у всех записей есть техник
+        missing_tech = df[df['tech'].isin(['unknown', '   -   ', ''])]
+        if not missing_tech.empty:
+            # Попробуем заполнить недостающие техники из базы данных
+            from database import ADDRESS_DB
+            
+            # Создаем словарь для поиска техника по device_id
+            tech_mapping = {}
+            for item in ADDRESS_DB:
+                tech_mapping[item['id_terem']] = item['texnik']
+            
+            # Функция для поиска техника
+            def find_tech_by_device_id(device_id):
+                return tech_mapping.get(device_id, 'unknown')
+            
+            # Применяем поиск техника для записей без техника
+            for idx, row in missing_tech.iterrows():
+                device_id = row['device_id']
+                if pd.notna(device_id):
+                    try:
+                        tech = find_tech_by_device_id(int(device_id))
+                        df.at[idx, 'tech'] = tech
+                    except (ValueError, TypeError):
+                        pass
 
-            for idx in df[mask_missing].index:
-                try:
-                    dev_id = int(df.at[idx, 'device_id'])
-                    found_tech = tech_mapping.get(dev_id)
-                    if found_tech:
-                        df.at[idx, 'tech'] = found_tech
-                except (ValueError, TypeError):
-                    pass
-
-        # 3. Report Generation Logic
+        # Определяем даты
         today = datetime.now().date()
         cutoff_date = pd.Timestamp(today) - pd.Timedelta(days=7)
         
+        # Разделяем на нормальные и подозрительные инкассации
         normal_data = []
         suspicious_data = []
         
-        # Group by device_id and tech
+        # Группируем по device_id и tech для выявления подозрительных
         grouped = df.groupby(['device_id', 'tech']).agg({
             'banknotes': 'sum',
             'coins': 'sum',
@@ -594,7 +547,7 @@ async def report_inki_5weeks(message: types.Message):
             'date': ['min', 'max']
         }).reset_index()
         
-        # Flatten columns after aggregation
+        # Упрощаем колонки после группировки
         grouped.columns = ['device_id', 'tech', 'banknotes', 'coins', 'address', 'date_min', 'date_max']
         
         for _, row in grouped.iterrows():
@@ -606,11 +559,11 @@ async def report_inki_5weeks(message: types.Message):
             date_min = row['date_min']
             date_max = row['date_max']
             
-            # Skip rows with truly unknown techs even after mapping
-            if str(tech).lower() in ['unknown', '   -   ', '']:
+            # Пропускаем записи с неизвестными техниками
+            if tech in ['unknown', '   -   ', '']:
                 continue
                 
-            # Suspicious check (> 20,000 UAH)
+            # Проверяем на подозрительные суммы (теперь порог 20,000 грн)
             if banknotes > 20000 or coins > 20000:
                 suspicious_data.append({
                     'device_id': device_id,
@@ -624,55 +577,55 @@ async def report_inki_5weeks(message: types.Message):
             else:
                 normal_data.append(row)
         
-        # Formulate the Report
+        # Формируем отчет
         report_lines = []
         report_lines.append("📊 ОТЧЕТ ПО ИНКАСАЦИЯМ")
         report_lines.append("=" * 50)
         report_lines.append(f"Отчет сформирован: {datetime.now().strftime('%d.%m.%Y %H:%M')}")
         report_lines.append("")
         
+        # Группируем нормальные данные по техникам
         known_techs = ['ruslan', 'igor', 'dmutro']
         
+        # Статистика для сводки
         total_banknotes = 0
         total_coins = 0
         total_inkasations = 0
         
-        # Normalize tech names in normal_data for comparison
-        # (Assuming 'tech' in row is consistent from DB)
-        
+        # Обрабатываем известных техников
         for tech in known_techs:
-            # Filter data for specific tech (case insensitive)
-            tech_normal_data = [row for row in normal_data if str(row['tech']).lower() == tech]
+            tech_normal_data = [row for row in normal_data if row['tech'] == tech]
             
             if not tech_normal_data:
                 continue
                 
+            # Создаем DataFrame для этого техника
             tech_df = pd.DataFrame(tech_normal_data)
             
             report_lines.append(f"🧑‍💼 ТЕХНИК: {tech.upper()}")
             report_lines.append("-" * 40)
             
-            # Split: Submitted vs On Hand
+            # Разделяем на сдано и на руках по дате
             sdano_data = tech_df[tech_df['date_max'] < cutoff_date]
             na_rukah_data = tech_df[tech_df['date_max'] >= cutoff_date]
             
-            # --- SUBMITTED (Old) ---
+            # СДАНО
             if not sdano_data.empty:
                 sdano_bank = sdano_data['banknotes'].sum()
                 sdano_coins = sdano_data['coins'].sum()
                 sdano_total = sdano_bank + sdano_coins
                 
-                p_start = sdano_data['date_min'].min().strftime('%d.%m.%Y')
-                p_end = sdano_data['date_max'].max().strftime('%d.%m.%Y')
+                period_start = sdano_data['date_min'].min().strftime('%d.%m.%Y')
+                period_end = sdano_data['date_max'].max().strftime('%d.%m.%Y')
                 
                 report_lines.append("✅ СДАНО:")
-                report_lines.append(f"   Период: {p_start} - {p_end}")
+                report_lines.append(f"   Период: {period_start} - {period_end}")
                 report_lines.append(f"   Банкноты: {sdano_bank:,.0f} грн".replace(',', ' '))
                 report_lines.append(f"   Монеты: {sdano_coins:,.0f} грн".replace(',', ' '))
                 report_lines.append(f"   ОБЩАЯ: {sdano_total:,.0f} грн (должна быть сдана)".replace(',', ' '))
                 report_lines.append("")
             
-            # --- ON HAND (Recent) ---
+            # НА РУКАХ
             if not na_rukah_data.empty:
                 na_rukah_bank = na_rukah_data['banknotes'].sum()
                 na_rukah_coins = na_rukah_data['coins'].sum()
@@ -683,30 +636,31 @@ async def report_inki_5weeks(message: types.Message):
                 report_lines.append(f"   Монеты: {na_rukah_coins:,.0f} грн".replace(',', ' '))
                 report_lines.append(f"   ОБЩАЯ: {na_rukah_total:,.0f} грн".replace(',', ' '))
                 
-                # Daily breakdown for recent week
-                # Need to go back to original DF to get daily sums, not grouped sums
-                last_week_raw = df[
-                    (df['tech'].str.lower() == tech) & 
+                # Разбивка по дням (для последней недели)
+                last_week_data = df[
+                    (df['tech'] == tech) & 
                     (df['date'] >= cutoff_date) &
-                    (df['banknotes'] <= 20000) & (df['coins'] <= 20000)
+                    (~((df['banknotes'] > 20000) | (df['coins'] > 20000)))  # Исключаем подозрительные (порог 20,000)
                 ]
                 
-                if not last_week_raw.empty:
-                    daily = last_week_raw.groupby(last_week_raw['date'].dt.date).agg({
-                        'banknotes': 'sum', 'coins': 'sum'
+                if not last_week_data.empty:
+                    daily = last_week_data.groupby(last_week_data['date'].dt.date).agg({
+                        'banknotes': 'sum',
+                        'coins': 'sum'
                     })
-                    for day, d_row in daily.iterrows():
-                        d_total = d_row['banknotes'] + d_row['coins']
-                        report_lines.append(f"   📅 {day.strftime('%d.%m.%Y')}: {d_total:,.0f} грн".replace(',', ' '))
+                    
+                    for day, row in daily.iterrows():
+                        day_total = row['banknotes'] + row['coins']
+                        report_lines.append(f"   📅 {day.strftime('%d.%m.%Y')}: {day_total:,.0f} грн".replace(',', ' '))
                 
                 report_lines.append("")
             
-            # Update totals
+            # Добавляем к общей статистике
             total_banknotes += tech_df['banknotes'].sum()
             total_coins += tech_df['coins'].sum()
             total_inkasations += len(tech_df)
         
-        # Summary
+        # СВОДНАЯ СТАТИСТИКА (только нормальные инкассации)
         report_lines.append("📈 СВОДНАЯ СТАТИСТИКА")
         report_lines.append("-" * 40)
         report_lines.append(f"Общая сумма банкнот: {total_banknotes:,.0f} грн".replace(',', ' '))
@@ -716,17 +670,17 @@ async def report_inki_5weeks(message: types.Message):
         
         if normal_data:
             normal_df = pd.DataFrame(normal_data)
-            p_start = normal_df['date_min'].min().strftime('%d.%m.%Y')
-            p_end = normal_df['date_max'].max().strftime('%d.%m.%Y')
-            report_lines.append(f"Период данных: {p_start} - {p_end}")
+            period_start = normal_df['date_min'].min().strftime('%d.%m.%Y')
+            period_end = normal_df['date_max'].max().strftime('%d.%m.%Y')
+            report_lines.append(f"Период данных: {period_start} - {period_end}")
         
-        # Suspicious Section
+        # Добавляем подозрительные инкассации
         if suspicious_data:
             report_lines.append("")
             report_lines.append("==================================================")
             report_lines.append("⁉️ПОДОЗРИТЕЛЬНЫЕ ИНКАССАЦИИ⁉️")
             report_lines.append("==================================================")
-            report_lines.append("(> 20 000 грн)")
+            report_lines.append("(аппараты на которых сумма банкнот или монет более 20 тыс грн)")
             report_lines.append("")
             
             for item in suspicious_data:
@@ -736,11 +690,12 @@ async def report_inki_5weeks(message: types.Message):
                 report_lines.append(f"Техник: {item['tech']}")
                 report_lines.append("---")
         
+        # Формируем финальный текст
         full_report = "\n".join(report_lines)
         
         await status_msg.delete()
         
-        # Split message if too long
+        # Отправляем отчет частями если он слишком длинный
         if len(full_report) <= 4000:
             await message.answer(f"<pre>{full_report}</pre>", parse_mode="HTML")
         else:
@@ -750,16 +705,11 @@ async def report_inki_5weeks(message: types.Message):
                 await asyncio.sleep(0.3)
 
     except Exception as e:
-        if conn:
-            conn.close()
-        try:
-            await status_msg.delete()
-        except:
-            pass
-        await message.answer(f"❌ Ошибка: {e}")
+        await status_msg.delete()
+        await message.answer(f"❌ Ошибка при формировании отчета: {e}")
         import logging
         import traceback
-        logging.error(f"Error in 5-week report: {e}")
+        logging.error(f"Ошибка 5-недельного отчета инкассаций: {e}")
         logging.error(traceback.format_exc())
 
 # =======================================================
@@ -845,70 +795,13 @@ async def send_service_all(message: types.Message):
         await message.answer("⚠️ Service отчет не найден.")
 
 
-from aiogram.types import BufferedInputFile  # <--- ВОТ ЭТОГО НЕ ХВАТАЛО
-import psycopg2
-import os
-
 # =======================================================
 # 🗺 ФАЙЛ КАРТЫ (Кнопка: "файл карты")
 # =======================================================
 
 @router.message(SuperRole.online, F.text.contains("файл карты"))
 async def send_map_file(message: types.Message):
-    """
-    Скачивает map_routes_final.html из базы данных (таблица automation_html_files)
-    и отправляет его в Телеграм без сохранения на диск.
-    """
-    status_msg = await message.answer("⏳ Ищу карту в базе данных...")
-
-    conn = None
-    try:
-        # Подключение к БД
-        conn = psycopg2.connect(
-            host=os.getenv("DB_HOST"),
-            port=os.getenv("DB_PORT"),
-            database=os.getenv("DB_NAME"),
-            user=os.getenv("DB_USER"),
-            password=os.getenv("DB_PASSWORD")
-        )
-        cur = conn.cursor()
-
-        # Запрос к таблице automation_html_files
-        file_name = "map_routes_final.html"
-        query = "SELECT content FROM automation_html_files WHERE filename = %s"
-        
-        cur.execute(query, (file_name,))
-        result = cur.fetchone()
-
-        if result:
-            html_content = result[0]
-            
-            # Превращаем строку (HTML) в байты
-            file_bytes = html_content.encode('utf-8')
-            
-            # Создаем виртуальный файл в памяти
-            input_file = BufferedInputFile(file_bytes, filename=file_name)
-            
-            await status_msg.delete()
-            await message.answer_document(
-                input_file, 
-                caption="🗺 <b>Интерактивная карта маршрутов</b>\n(Загружено из базы данных)", 
-                parse_mode="HTML"
-            )
-        else:
-            await status_msg.edit_text(f"❌ Файл <code>{file_name}</code> не найден в базе данных.")
-
-    except Exception as e:
-        # Если сообщение уже удалено, отправляем новое
-        try:
-            await status_msg.edit_text(f"❌ Ошибка при получении карты: {e}")
-        except:
-            await message.answer(f"❌ Ошибка при получении карты: {e}")
-        print(f"DB Error: {e}")
-    
-    finally:
-        if conn:
-            conn.close()
+    await send_file_safe(message, "interactive_routes_map.html", "Интерактивная карта")
 
 
 # =======================================================
