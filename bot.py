@@ -1,8 +1,9 @@
 import asyncio
 import logging
 import aiohttp 
-import os # <-- НОВЫЙ ИМПОРТ: для работы с переменными среды
-from dotenv import load_dotenv # <-- НОВЫЙ ИМПОРТ: для чтения файла .env
+import os
+import sys
+from dotenv import load_dotenv
 from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.enums import ParseMode
@@ -11,11 +12,31 @@ from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 import database as db
 
+# --- ЗАЩИТА ОТ МНОЖЕСТВЕННОГО ЗАПУСКА ---
+LOCK_FILE = "vodoley_bot.lock"
+
+def acquire_lock():
+    """Предотвращает запуск нескольких экземпляров бота"""
+    if os.path.exists(LOCK_FILE):
+        print("❌ Бот уже запущен!")
+        print(f"❌ Если вы уверены, что бот не запущен, удалите файл: {LOCK_FILE}")
+        sys.exit(1)
+    
+    with open(LOCK_FILE, 'w') as f:
+        f.write(str(os.getpid()))
+    print("✅ Блокировка установлена")
+
+def release_lock():
+    """Удаляет файл блокировки при выходе"""
+    if os.path.exists(LOCK_FILE):
+        os.remove(LOCK_FILE)
+        print("✅ Блокировка снята")
+
 # --- ЗАВАНТАЖЕННЯ ЗМІННИХ СЕРЕДОВИЩА ---
 load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN") # <-- ТОКЕН БЕРЕТСЯ ИЗ ПЕРЕМЕННОЙ СРЕДЫ
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# Импортируем роутеры (как в твоем файле)
+# Импортируем роутеры
 from handlers_callcenter import router as callcenter_router, get_main_menu
 from handlers_ruslan import router as ruslan_router
 from handlers_dmutro import router as dmutro_router
@@ -24,11 +45,13 @@ from handlers_finance import router as finance_router
 from handlers_super import router as super_router, SuperRole, get_super_menu
 from handlers_texdir import router as texdir_router, TexdirRole, get_texdir_menu 
 
-
 if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN не знайдено в файлі .env") # Проверка на наличие токена
+    raise ValueError("BOT_TOKEN не знайдено в файлі .env")
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
+logging.basicConfig(
+    level=logging.INFO, 
+    format="%(asctime)s - [%(levelname)s] - %(message)s"
+)
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
@@ -44,10 +67,8 @@ dp.include_router(texdir_router)
 
 # --- ФУНКЦИЯ ПОЛУЧЕНИЯ ПОГОДЫ ---
 async def get_lviv_weather():
-    # Координаты Львова: 49.8397, 24.0297
     url = "https://api.open-meteo.com/v1/forecast?latitude=49.8397&longitude=24.0297&daily=weather_code,temperature_2m_max,temperature_2m_min&timezone=auto"
     
-    # Расшифровка кодов погоды (WMO)
     wmo_codes = {
         0: "☀️ Ясно", 1: "🌤 Преимущественно ясно", 2: "⛅️ Переменная облачность", 3: "☁️ Пасмурно",
         45: "🌫 Туман", 48: "🌫 Изморозь",
@@ -70,10 +91,9 @@ async def get_lviv_weather():
         
         forecast_msg = "<b>🌦 Погода у Львові на 7 днів:</b>\n\n"
         
-        # Берем 7 дней
         for i in range(min(7, len(times))):
             date_obj = datetime.strptime(times[i], "%Y-%m-%d")
-            date_str = date_obj.strftime("%d.%m") # Формат 30.11
+            date_str = date_obj.strftime("%d.%m")
             weather_desc = wmo_codes.get(codes[i], "🤷 Нет данных")
             
             forecast_msg += (
@@ -89,14 +109,11 @@ async def get_lviv_weather():
 # --- START ---
 @dp.message(CommandStart())
 async def start_cmd(message: types.Message):
-    # Сначала отправляем приветствие
     await message.answer("👋 Привіт, я <b>бот Водолійчік</b>!")
     
-    # Получаем и отправляем погоду
     weather_text = await get_lviv_weather()
     await message.answer(weather_text)
     
-    # Напоминаем про суперслово
     await message.answer("Введіть <b>суперслово</b> 🔑 для авторизації.")
 
 # --- СУПЕРСЛОВА (Вход в роли) ---
@@ -118,14 +135,30 @@ async def role_entry(message: types.Message, state: FSMContext):
 
 # --- MAIN ---
 async def main():
-    # Инициализация таблиц БД
-    db.init_tables()
-    db.init_shared_tables()
+    # Устанавливаем блокировку
+    acquire_lock()
     
-    logging.info("🤖 Бот запущен!")
-    await dp.start_polling(bot)
+    try:
+        # Инициализация таблиц БД
+        db.init_tables()
+        db.init_shared_tables()
+        
+        logging.info("🤖 Бот запущен!")
+        await dp.start_polling(bot)
+        
+    except KeyboardInterrupt:
+        logging.info("⛔️ Бот остановлен пользователем")
+    except Exception as e:
+        logging.error(f"❌ Критическая ошибка: {e}")
+    finally:
+        # Снимаем блокировку при любом завершении
+        release_lock()
+        await bot.session.close()
 
 if __name__ == "__main__":
-    # Убедитесь, что у вас установлена библиотека python-dotenv
-    # pip install python-dotenv
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n⛔️ Бот остановлен")
+    finally:
+        release_lock()
